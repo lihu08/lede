@@ -3,7 +3,7 @@ name: Build Redmi AX6 Firmware
 on:
   push:
     branches: [ main, master ]
-    paths: 
+    paths:
       - '.config'
       - '.github/workflows/build-ax6.yml'
   workflow_dispatch:
@@ -13,58 +13,62 @@ jobs:
     runs-on: ubuntu-22.04
     
     steps:
-    - name: Checkout code
+    - name: Checkout repository
       uses: actions/checkout@v4
+      
+    - name: Maximize build space
+      uses: easimon/maximize-build-space@master
       with:
-        submodules: true
-
-    - name: Clean disk space
+        root-reserve-mb: 512
+        swap-size-mb: 1024
+        remove-dotnet: 'true'
+        remove-android: 'true'
+        remove-haskell: 'true'
+        
+    - name: Check available space
+      run: df -h
+      
+    - name: Install dependencies
       run: |
-        # 清理系统缓存释放空间
-        sudo apt clean
-        sudo rm -rf /var/lib/apt/lists/*
-        sudo rm -rf /usr/share/dotnet
-        sudo rm -rf /opt/ghc
-        sudo rm -rf /usr/local/graalvm
-
+        sudo apt update
+        sudo apt install -y build-essential clang flex bison g++ gawk \
+          gettext git libncurses5-dev libssl-dev python3-distutils rsync \
+          unzip zlib1g-dev file wget
+          
+    - name: Clone OpenWrt source
+      run: |
+        git clone https://github.com/coolsnowwolf/lede openwrt
+        
     - name: Setup feeds
+      working-directory: openwrt
       run: |
         echo 'src-git helloworld https://github.com/fw876/helloworld' >> feeds.conf.default
         echo 'src-git passwall https://github.com/xiaorouji/openwrt-passwall' >> feeds.conf.default
         ./scripts/feeds update -a
         ./scripts/feeds install -a
-
-    - name: Install minimal dependencies
+        
+    - name: Apply configuration
+      working-directory: openwrt
       run: |
-        sudo apt update
-        # 只安装最必要的依赖
-        sudo apt install -y build-essential clang flex bison g++ gawk \
-          gettext git libncurses5-dev libssl-dev python3 python3-pip rsync unzip zlib1g-dev \
-          file wget
-
-    - name: Apply config
+        [ -f ../.config ] && cp ../.config .config
+        make defconfig
+        
+    - name: Download sources
+      working-directory: openwrt
       run: |
-        [ -f .config ] && make defconfig || make defconfig
-
-    - name: Download sources with cleanup
+        make download -j8
+        find dl -size -1024c -delete 2>/dev/null || true
+        
+    - name: Build firmware
+      working-directory: openwrt
       run: |
-        # 分批次下载，及时清理
-        make download -j4
-        # 清理小文件和临时文件
-        find dl -size -1024c -delete
-        sudo sync
-
-    - name: Build with limited parallelism
-      run: |
-        echo "🚀 Starting compilation with disk space optimization..."
-        # 使用更少的并行任务减少内存和磁盘压力
-        make -j2 V=s
-        # 编译完成后立即清理
-        make clean
-
-    - name: Upload firmware artifacts
+        echo "Starting build..."
+        df -h
+        make -j1 V=s
+        
+    - name: Upload firmware
       uses: actions/upload-artifact@v4
       with:
         name: redmi-ax6-firmware
-        path: bin/targets/ipq807x/arm64/
+        path: openwrt/bin/targets/*/*
         retention-days: 7
